@@ -28,7 +28,10 @@ from datetime import datetime
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE, "data.csv")
 HIST_FILE = os.path.join(BASE, "historico_bob.csv")
-SALIDA = os.path.join(BASE, "tablero.html")
+# Se escribe el mismo contenido en dos nombres:
+#   index.html   -> es el que sirve GitHub Pages en la raiz del sitio
+#   tablero.html -> nombre explicito, por si se busca el archivo en el repo
+SALIDAS = [os.path.join(BASE, "index.html"), os.path.join(BASE, "tablero.html")]
 
 COL = "mejor_precio_limpio"
 COL_BRUTO = "mejor_precio_bruto"
@@ -340,10 +343,11 @@ def main():
             .replace("__DIAS__", str(datos["dias"]))
             .replace("__DATOS__", json.dumps(datos, ensure_ascii=False)))
 
-    with open(SALIDA, "w", encoding="utf-8") as f:
-        f.write(html)
+    for ruta in SALIDAS:
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(html)
 
-    print(f"tablero.html generado: {len(html) // 1024} KB")
+    print(f"{', '.join(os.path.basename(r) for r in SALIDAS)}: {len(html) // 1024} KB")
     print(f"  historico: {len(datos['historico'])} dias")
     print(f"  mercados:  {', '.join(datos['precios']) or 'ninguno todavia'}")
     print(f"  lecturas propias: {datos['lecturas']} en {datos['dias']} dia(s)")
