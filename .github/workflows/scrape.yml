@@ -1,10 +1,13 @@
 name: Recolector P2P Binance
 
-# Corre cada 3 horas, todo el dia, en los servidores de GitHub (gratis).
+# Corre CADA HORA, todo el dia, en los servidores de GitHub (gratis).
 # Tu Mac no tiene que estar prendida.
+#
+# Cuota: GitHub Free da 2.000 minutos/mes en repos privados y redondea cada
+# ejecucion a 1 minuto. 24 al dia = ~730 al mes. Entra comodo.
 on:
   schedule:
-    - cron: "0 */3 * * *"   # 00, 03, 06, 09, 12, 15, 18, 21 UTC (cada 3 h)
+    - cron: "0 * * * *"     # cada hora en punto (UTC)
   workflow_dispatch:          # boton para correrlo a mano cuando quieras probar
 
 # Permiso para que la accion pueda guardar el data.csv actualizado en el repo
@@ -28,6 +31,11 @@ jobs:
 
       - name: Tomar lectura de precios
         run: python scrape.py
+
+      # El historico diario es un extra. Si Yadio esta caido no debe hacer
+      # fallar la recoleccion, que es lo importante: por eso el "|| true".
+      - name: Actualizar historico diario (Yadio)
+        run: python historico.py || true
 
       - name: Guardar la lectura en el repositorio
         run: |
