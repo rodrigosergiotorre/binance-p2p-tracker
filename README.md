@@ -63,6 +63,30 @@ filtrar por uno solo.
 
 ---
 
+## Anuncios promocionados (importante)
+
+Binance permite **pagar para aparecer primero** en la lista. Esos anuncios vienen
+marcados con `privilegeDesc: "Promoted Ad"` y siempre en la posicion 1.
+
+En todas las lecturas observadas, el anuncio promocionado tenia **peor precio**
+que el mercado real. Se paga por la posicion, no por el precio:
+
+| mercado | lado | promocionado | mercado real |
+|---|---|---|---|
+| BOB | compra | 11.99 | 11.88 |
+| BOB | venta | 11.46 | 11.85 |
+| USD-Zinli | venta | 0.963 | 1.007 |
+
+Por eso el codigo hace dos cosas:
+
+1. **Los excluye del calculo** por su marca, no por su precio. Se registran
+   aparte en las columnas `promocionados` y `precio_promocionado`.
+2. **No confia en el orden de la lista.** El mejor precio se calcula: el mas
+   barato en compra, el mas caro en venta. Si Binance cambia el orden algun dia,
+   los numeros siguen siendo correctos.
+
+---
+
 ## El filtro de outliers
 
 A veces el primer anuncio de la lista esta muy alejado del resto: alguien
@@ -103,6 +127,7 @@ Para cambiar que tan estricto es, edita `UMBRAL_OUTLIER` en `scrape.py`
 | `mejor_comerciante` / `mejor_tipo` | Quien publica el mejor precio |
 | `mejor_ordenes_mes` / `mejor_tasa_completado` | Reputacion de ese anunciante |
 | `metodos_pago_vistos` | Que metodos aparecieron en esa lectura |
+| `promocionados` / `precio_promocionado` | Anuncios pagados que se excluyeron, y a que precio |
 
 ---
 

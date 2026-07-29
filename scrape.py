@@ -115,6 +115,8 @@ COLUMNAS = [
     "mejor_ordenes_mes",
     "mejor_tasa_completado",
     "metodos_pago_vistos",   # que metodos aparecen en esa lectura, separados por "|"
+    "promocionados",         # cuantos anuncios pagados venian en la lista
+    "precio_promocionado",   # a que precio, para poder estudiarlos aparte
 ]
 
 
@@ -170,16 +172,46 @@ def numero(valor):
         return None
 
 
-def precios_de(anuncios):
-    """Lista de (precio, anuncio) en el orden que los devuelve Binance."""
-    salida = []
+def es_promocionado(anuncio):
+    """
+    Anuncio pagado para salir primero en la lista.
+
+    Binance los marca con privilegeDesc = "Promoted Ad" (y privilegeType = 8).
+    Casi siempre tienen PEOR precio que el mercado real: se paga por la
+    posicion, no por el precio. Hay que sacarlos del calculo.
+    """
+    if not isinstance(anuncio, dict):
+        return False
+    desc = anuncio.get("privilegeDesc")
+    if isinstance(desc, str) and desc.strip():
+        return True
+    return anuncio.get("privilegeType") is not None
+
+
+def precios_de(anuncios, lado):
+    """
+    Devuelve (pares_ordenados, promocionados).
+
+    IMPORTANTE: no confiamos en el orden que manda Binance, porque el anuncio
+    promocionado viene clavado en la primera posicion aunque tenga peor precio.
+    Ordenamos nosotros segun el lado:
+      - compra -> el mejor es el MAS BARATO   (pagas menos)
+      - venta  -> el mejor es el MAS CARO     (recibis mas)
+    """
+    reales, promos = [], []
     for a in anuncios:
         if not isinstance(a, dict):
             continue
         p = numero(campo(a.get("adv"), "price", default=None))
-        if p is not None and p > 0:
-            salida.append((p, a))
-    return salida
+        if p is None or p <= 0:
+            continue
+        if es_promocionado(a):
+            promos.append((p, a))
+        else:
+            reales.append((p, a))
+
+    reales.sort(key=lambda par: par[0], reverse=(lado == "venta"))
+    return reales, promos
 
 
 def filtrar_outliers(pares):
@@ -210,11 +242,13 @@ def filtrar_outliers(pares):
     return pares, [], mediana
 
 
-def resumen(anuncios):
+def resumen(anuncios, lado):
     """Calcula todas las metricas de un lado."""
-    pares = precios_de(anuncios)
+    pares, promos = precios_de(anuncios, lado)
     fila = {c: "" for c in COLUMNAS}
     fila["cantidad_anuncios"] = len(pares)
+    fila["promocionados"] = len(promos)
+    fila["precio_promocionado"] = "|".join(str(p) for p, _ in promos)
 
     liquidez = 0.0
     metodos = []
@@ -329,7 +363,7 @@ def main():
 
             guardar_snapshot(ahora_utc, mercado, etiqueta, anuncios)
 
-            fila = resumen(anuncios)
+            fila = resumen(anuncios, etiqueta)
             fila["fecha_utc"] = ahora_utc.strftime("%Y-%m-%d %H:%M:%S")
             fila["fecha_bolivia"] = ahora_bo.strftime("%Y-%m-%d %H:%M:%S")
             fila["mercado"] = mercado["nombre"]
@@ -338,8 +372,10 @@ def main():
             filas.append([fila[c] for c in COLUMNAS])
 
             aviso = ""
+            if fila["promocionados"]:
+                aviso += f"  [promocionados fuera: {fila['precio_promocionado']}]"
             if fila["descartados"]:
-                aviso = f"  (descartados {fila['descartados']}: {fila['precios_descartados']})"
+                aviso += f"  (descartados {fila['descartados']}: {fila['precios_descartados']})"
             print(
                 f"[{etiqueta}] bruto={fila['mejor_precio_bruto']} "
                 f"limpio={fila['mejor_precio_limpio']} "

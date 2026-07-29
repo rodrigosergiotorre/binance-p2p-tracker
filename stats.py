@@ -110,6 +110,36 @@ def spread(df):
     print(f"    Compra: {c:.4f}   Venta: {v:.4f}   Diferencia: {abs(v - c):.4f}")
 
 
+def promocionados(df):
+    """Cuanto se aleja la publicidad pagada del mercado real."""
+    if "precio_promocionado" not in df.columns:
+        return
+
+    filas = []
+    for _, r in df.iterrows():
+        crudo = str(r.get("precio_promocionado") or "").strip()
+        real = r.get(COL)
+        if not crudo or pd.isna(real):
+            continue
+        for p in crudo.split("|"):
+            try:
+                p = float(p)
+            except ValueError:
+                continue
+            # Positivo = la publicidad te conviene; negativo = te perjudica
+            ventaja = (p - real) if r["lado"] == "venta" else (real - p)
+            filas.append({"pct": ventaja / real * 100})
+
+    if not filas:
+        return
+
+    d = pd.DataFrame(filas)
+    peores = int((d["pct"] < 0).sum())
+    print(f"  --- ANUNCIOS PROMOCIONADOS ---")
+    print(f"    Vistos: {len(d)}   peores que el mercado real: {peores} ({peores/len(d)*100:.0f}%)")
+    print(f"    Diferencia promedio frente al mejor precio real: {d['pct'].mean():+.2f}%")
+
+
 def metodos(df):
     """Que metodos de pago aparecieron en la ultima lectura."""
     if "metodos_pago_vistos" not in df.columns:
@@ -174,6 +204,7 @@ def main():
         resumen_lado(d, "venta")
         spread(d)
         efecto_filtro(d)
+        promocionados(d)
         metodos(d)
         grafico(d, mercado)
 
