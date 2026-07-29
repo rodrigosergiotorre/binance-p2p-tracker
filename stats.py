@@ -153,6 +153,115 @@ def metodos(df):
     print(f"    {', '.join(ultimos)}")
 
 
+# Cuantas muestras necesita una franja horaria para que su promedio
+# signifique algo. Por debajo de esto no mostramos conclusiones.
+MIN_MUESTRAS_HORA = 5
+
+
+def por_hora(df, mercado):
+    """
+    A que hora del dia conviene comprar o vender.
+
+    Importante: un precio bueno a una hora sin liquidez no sirve de nada,
+    asi que mostramos precio Y profundidad del mercado juntos.
+    """
+    d = df.dropna(subset=[COL]).copy()
+    if d.empty:
+        return
+    d["hora"] = d["fecha_bolivia"].dt.hour
+
+    print(f"  --- POR HORA DEL DIA (hora Bolivia) ---")
+
+    dias = d["fecha_bolivia"].dt.date.nunique()
+    if dias < 3:
+        print(f"    Solo {dias} dia(s) de datos. Se necesita mas historia;")
+        print(f"    con lecturas cada hora, en 1-2 semanas esto ya dice algo.")
+        return
+
+    hubo_algo = False
+    for lado in ("compra", "venta"):
+        dl = d[d["lado"] == lado]
+        if dl.empty:
+            continue
+
+        g = dl.groupby("hora").agg(
+            precio=(COL, "mean"),
+            muestras=(COL, "size"),
+        )
+        if "liquidez_total_usdt" in dl.columns:
+            liq = pd.to_numeric(dl["liquidez_total_usdt"], errors="coerce")
+            g["liquidez"] = liq.groupby(dl["hora"]).mean()
+
+        g = g[g["muestras"] >= MIN_MUESTRAS_HORA]
+        if g.empty:
+            continue
+
+        hubo_algo = True
+        # compra: buscamos pagar menos. venta: buscamos recibir mas.
+        mejor = g["precio"].idxmin() if lado == "compra" else g["precio"].idxmax()
+        peor = g["precio"].idxmax() if lado == "compra" else g["precio"].idxmin()
+        dif = abs(g.loc[mejor, "precio"] - g.loc[peor, "precio"])
+        pct = dif / g.loc[peor, "precio"] * 100
+
+        verbo = "comprar" if lado == "compra" else "vender"
+        print(f"    Mejor hora para {verbo}: {int(mejor):02d}:00 "
+              f"({g.loc[mejor, 'precio']:.4f}, {int(g.loc[mejor, 'muestras'])} muestras)")
+        print(f"      peor hora: {int(peor):02d}:00 ({g.loc[peor, 'precio']:.4f})"
+              f"   diferencia: {dif:.4f} ({pct:.2f}%)")
+
+        if "liquidez" in g.columns and pd.notna(g.loc[mejor, "liquidez"]):
+            liq_mejor = g.loc[mejor, "liquidez"]
+            liq_media = g["liquidez"].mean()
+            if liq_media and liq_mejor < liq_media * 0.5:
+                print(f"      OJO: a esa hora hay poca liquidez "
+                      f"({liq_mejor:,.0f} vs {liq_media:,.0f} de promedio).")
+
+        if pct < 0.1:
+            print(f"      (diferencia muy chica: puede ser ruido, no un patron)")
+
+    if not hubo_algo:
+        print(f"    Aun no hay {MIN_MUESTRAS_HORA} muestras por franja horaria.")
+
+
+def evolucion_spread(df, mercado):
+    """Como se movio el spread compra/venta en el tiempo."""
+    c = df[df["lado"] == "compra"].dropna(subset=[COL])[["fecha_bolivia", COL]]
+    v = df[df["lado"] == "venta"].dropna(subset=[COL])[["fecha_bolivia", COL]]
+    if c.empty or v.empty:
+        return
+
+    j = pd.merge(c, v, on="fecha_bolivia", suffixes=("_compra", "_venta"))
+    if j.empty:
+        return
+
+    j["spread"] = (j[f"{COL}_compra"] - j[f"{COL}_venta"]).abs()
+    j["spread_pct"] = j["spread"] / j[f"{COL}_venta"] * 100
+
+    print(f"  --- SPREAD EN EL TIEMPO ---")
+    print(f"    Promedio: {j['spread'].mean():.4f} ({j['spread_pct'].mean():.2f}%)")
+    print(f"    Minimo:   {j['spread'].min():.4f}   Maximo: {j['spread'].max():.4f}")
+    print(f"    Ahora:    {j['spread'].iloc[-1]:.4f} ({j['spread_pct'].iloc[-1]:.2f}%)")
+
+    if len(j) >= 4:
+        umbral = j["spread"].quantile(0.25)
+        print(f"    Spread 'estrecho' (25% mejor): por debajo de {umbral:.4f}")
+
+    plt.figure(figsize=(11, 4))
+    plt.plot(j["fecha_bolivia"], j["spread"], marker="o", markersize=3, color="#1565c0")
+    plt.axhline(j["spread"].mean(), linestyle="--", alpha=0.5, color="gray",
+                label=f"promedio {j['spread'].mean():.4f}")
+    plt.title(f"Spread compra/venta - {mercado}")
+    plt.xlabel("Fecha (hora Bolivia)")
+    plt.ylabel("Diferencia")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    ruta = os.path.join(BASE, f"spread_{re.sub(r'[^A-Za-z0-9_-]+', '_', str(mercado))}.png")
+    plt.savefig(ruta, dpi=120)
+    plt.close()
+    print(f"    Grafico: {os.path.basename(ruta)}")
+
+
 def nombre_archivo(mercado):
     limpio = re.sub(r"[^A-Za-z0-9_-]+", "_", str(mercado))
     return os.path.join(BASE, f"evolucion_{limpio}.png")
@@ -203,6 +312,8 @@ def main():
         resumen_lado(d, "compra")
         resumen_lado(d, "venta")
         spread(d)
+        evolucion_spread(d, mercado)
+        por_hora(d, mercado)
         efecto_filtro(d)
         promocionados(d)
         metodos(d)

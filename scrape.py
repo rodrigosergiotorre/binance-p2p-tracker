@@ -82,6 +82,12 @@ TOP_N = 5
 VENTANA_MEDIANA = 10    # sobre cuantos anuncios se calcula la mediana
 UMBRAL_OUTLIER = 0.01   # 1% de desvio respecto a la mediana
 
+# El resumen (data.csv) se guarda SIEMPRE: pesa muy poco.
+# El crudo (snapshots/) pesa ~250 KB por lectura, asi que solo lo guardamos
+# cada N horas. Con lecturas cada hora, guardar todo el crudo serian ~2 GB al
+# ano, demasiado para un repositorio.
+SNAPSHOT_CADA_HORAS = 3
+
 HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": (
@@ -347,6 +353,11 @@ def main():
     filas = []
     fallos = []
 
+    # El crudo solo se guarda cada SNAPSHOT_CADA_HORAS horas (ver arriba)
+    guardar_crudo = (ahora_utc.hour % SNAPSHOT_CADA_HORAS) == 0
+    if not guardar_crudo:
+        print("(esta lectura no guarda snapshot crudo, solo el resumen)")
+
     for mercado in MERCADOS:
         print(f"\n=== {mercado['nombre']} ({mercado['asset']}/{mercado['fiat']}) ===")
 
@@ -361,7 +372,8 @@ def main():
                 fallos.append(f"{mercado['nombre']}/{etiqueta}")
                 continue
 
-            guardar_snapshot(ahora_utc, mercado, etiqueta, anuncios)
+            if guardar_crudo:
+                guardar_snapshot(ahora_utc, mercado, etiqueta, anuncios)
 
             fila = resumen(anuncios, etiqueta)
             fila["fecha_utc"] = ahora_utc.strftime("%Y-%m-%d %H:%M:%S")

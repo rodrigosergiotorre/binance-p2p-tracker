@@ -22,10 +22,49 @@ Los dos filtros que pediri **estan desactivados** en el codigo (ver `scrape.py`)
 - `.github/workflows/scrape.yml` -> la tarea programada cada 3 horas.
 - `stats.py` -> las estadisticas y el grafico (lo corres cuando quieras).
 - `requirements.txt` -> dependencias.
-- `data.csv` -> el resumen, una fila por lado por lectura.
-- `snapshots/AAAA-MM-DD.jsonl` -> la respuesta CRUDA y completa de Binance,
-  un archivo por dia. Nada se descarta: si manana queremos una estadistica
-  distinta, se puede recalcular hacia atras sobre estos archivos.
+- `historico.py` -> trae el historico diario de Yadio (contexto largo).
+- `data.csv` -> el resumen, una fila por lado por lectura. **Cada hora.**
+- `historico_bob.csv` -> tasa diaria USDT/BOB del ultimo ano, de Yadio.
+- `snapshots/AAAA-MM-DD.jsonl` -> la respuesta CRUDA y completa de Binance.
+  Se guarda **cada 3 horas**, no cada lectura: pesa ~250 KB cada una y guardar
+  todas serian ~2 GB al ano.
+
+---
+
+## Frecuencia y cuota
+
+Las lecturas son **cada hora**. GitHub Free da 2.000 minutos al mes en repos
+privados y redondea cada ejecucion a 1 minuto: 24 al dia son ~730 al mes, algo
+mas de un tercio de la cuota.
+
+Para cambiarlo, edita el `cron` en `.github/workflows/scrape.yml`:
+
+| cada | cron | minutos/mes |
+|---|---|---|
+| hora | `0 * * * *` | ~730 |
+| 3 horas | `0 */3 * * *` | ~240 |
+| 30 minutos | `*/30 * * * *` | ~1460 |
+
+El crudo se controla aparte con `SNAPSHOT_CADA_HORAS` en `scrape.py`.
+
+---
+
+## Historia hacia atras: que se puede y que no
+
+**Binance no guarda historia de P2P.** Su API solo devuelve los anuncios vivos
+en este instante. La serie por horas solo se puede construir hacia adelante,
+acumulando. Por eso existe este proyecto.
+
+**Yadio.io si publica historia diaria**, hasta 365 dias atras. Eso trae
+`historico.py` a `historico_bob.csv`. Sirve para tendencia y estacionalidad,
+no para analisis intradia.
+
+No existe historia por horas hacia atras en ninguna fuente publica: Yadio
+guarda 5 minutos pero solo de las ultimas 24 horas.
+
+Cuidado al graficar: la tasa de Yadio **no es la misma medida** que el mejor
+precio de Binance P2P. Van en archivos separados a proposito. Si los pones en
+un mismo grafico, que sea como series distintas y etiquetadas.
 
 ---
 
