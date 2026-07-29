@@ -1,0 +1,7 @@
+fecha_utc,fecha_bolivia,lado,mejor_precio_bruto,mejor_precio_limpio,promedio_top5_limpio,mediana_top10,descartados,precios_descartados,cantidad_anuncios,liquidez_total_usdt,mejor_min_orden,mejor_max_orden,mejor_comerciante,mejor_tipo,mejor_ordenes_mes,mejor_tasa_completado
+2026-07-29 03:12:58,2026-07-28 23:12:58,compra,1.014,1.014,1.0148,1.016,0,,20,46775.38,40,4000,RUBEN_TRADER,merchant,4840,0.988
+2026-07-29 03:12:58,2026-07-28 23:12:58,venta,0.963,1.007,1.005,1.004,1,0.963,21,9490.69,995,998,User-38a6f,user,1,1.0
+2026-07-29 03:27:12,2026-07-28 23:27:12,compra,1.014,1.014,1.0148,1.016,0,,20,45899.29,40,4000,RUBEN_TRADER,merchant,4840,0.988
+2026-07-29 03:27:12,2026-07-28 23:27:12,venta,0.963,1.007,1.0048,1.003,1,0.963,21,8485.08,995,998,User-38a6f,user,1,1.0
+2026-07-29 03:31:45,2026-07-28 23:31:45,compra,1.014,1.014,1.0156,1.016,0,,20,55486.76,40,4000,RUBEN_TRADER,merchant,4840,0.988
+2026-07-29 03:31:45,2026-07-28 23:31:45,venta,0.963,1.007,1.0048,1.003,1,0.963,21,8168.41,995,998,User-38a6f,user,1,1.0
