@@ -29,6 +29,40 @@ Los dos filtros que pediri **estan desactivados** en el codigo (ver `scrape.py`)
 
 ---
 
+## Mercados
+
+Se recolectan varios mercados en la misma ejecucion. Estan definidos arriba de
+todo en `scrape.py`, en la lista `MERCADOS`:
+
+| mercado | que es | metodos de pago |
+|---|---|---|
+| `USD-Zinli` | USDT contra dolar | solo Zinli |
+| `BOB-todos` | USDT contra boliviano | todos |
+
+En `data.csv` la columna `mercado` dice de cual es cada fila, asi que todo
+convive en el mismo archivo.
+
+**Para agregar otro mercado** (por ejemplo pesos argentinos), copia un bloque de
+`MERCADOS` y cambia los valores:
+
+```python
+{
+    "nombre": "ARS-todos",
+    "fiat": "ARS",
+    "asset": "USDT",
+    "payTypes": [],      # lista vacia = todos los metodos de pago
+},
+```
+
+Si un mercado falla, los demas siguen funcionando igual: se anota el fallo y la
+ejecucion continua. Solo da error si ninguno devuelve datos.
+
+La columna `metodos_pago_vistos` te dice que metodos aparecieron en cada lectura.
+Sirve para descubrir los nombres exactos que usa Binance, por si despues quieres
+filtrar por uno solo.
+
+---
+
 ## El filtro de outliers
 
 A veces el primer anuncio de la lista esta muy alejado del resto: alguien
@@ -56,6 +90,7 @@ Para cambiar que tan estricto es, edita `UMBRAL_OUTLIER` en `scrape.py`
 | Columna | Que es |
 |---|---|
 | `fecha_utc` / `fecha_bolivia` | Momento de la lectura |
+| `mercado` / `fiat` | De que mercado es la fila (`USD-Zinli`, `BOB-todos`...) |
 | `lado` | `compra` o `venta` |
 | `mejor_precio_bruto` | El primero de la lista, sin filtrar |
 | `mejor_precio_limpio` | El primero que pasa el filtro de outliers |
@@ -67,6 +102,7 @@ Para cambiar que tan estricto es, edita `UMBRAL_OUTLIER` en `scrape.py`
 | `mejor_min_orden` / `mejor_max_orden` | Limites de orden del mejor anuncio (util: un precio buenisimo que solo acepta $20 no sirve de mucho) |
 | `mejor_comerciante` / `mejor_tipo` | Quien publica el mejor precio |
 | `mejor_ordenes_mes` / `mejor_tasa_completado` | Reputacion de ese anunciante |
+| `metodos_pago_vistos` | Que metodos aparecieron en esa lectura |
 
 ---
 

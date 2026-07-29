@@ -49,6 +49,29 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE, "data.csv")
 SNAPSHOT_DIR = os.path.join(BASE, "snapshots")
 
+# ------------------------------------------------------------------
+# MERCADOS QUE SE RECOLECTAN
+# ------------------------------------------------------------------
+# Para agregar un mercado nuevo, copia un bloque y cambia los valores.
+#   nombre   -> como se llamara en la columna "mercado" del CSV
+#   fiat     -> la moneda (USD, BOB, ARS, BRL...)
+#   asset    -> la cripto (USDT, BTC...)
+#   payTypes -> metodos de pago. Lista vacia [] = TODOS los metodos.
+MERCADOS = [
+    {
+        "nombre": "USD-Zinli",
+        "fiat": "USD",
+        "asset": "USDT",
+        "payTypes": ["Zinli"],
+    },
+    {
+        "nombre": "BOB-todos",
+        "fiat": "BOB",          # bolivianos
+        "asset": "USDT",
+        "payTypes": [],         # sin filtrar: todos los metodos de pago
+    },
+]
+
 # Cuantos anuncios pedimos por lado
 ROWS = 20
 
@@ -74,6 +97,8 @@ HEADERS = {
 COLUMNAS = [
     "fecha_utc",
     "fecha_bolivia",
+    "mercado",               # "USD-Zinli", "BOB-todos", ...
+    "fiat",                  # USD, BOB, ...
     "lado",                  # "compra" o "venta"
     "mejor_precio_bruto",    # el primero de la lista, sin filtrar
     "mejor_precio_limpio",   # el primero que pasa el filtro de outliers
@@ -89,18 +114,19 @@ COLUMNAS = [
     "mejor_tipo",            # user / merchant
     "mejor_ordenes_mes",
     "mejor_tasa_completado",
+    "metodos_pago_vistos",   # que metodos aparecen en esa lectura, separados por "|"
 ]
 
 
-def fetch_side(trade_type: str, rows: int = ROWS):
-    """Pide a Binance los anuncios de un lado (BUY o SELL)."""
+def fetch_side(mercado: dict, trade_type: str, rows: int = ROWS):
+    """Pide a Binance los anuncios de un lado (BUY o SELL) de un mercado."""
     payload = {
-        "fiat": "USD",
-        "asset": "USDT",
+        "fiat": mercado["fiat"],
+        "asset": mercado["asset"],
         "tradeType": trade_type,          # "BUY" o "SELL"
         "page": 1,
         "rows": rows,
-        "payTypes": ["Zinli"],            # metodo de pago Zinli
+        "payTypes": mercado["payTypes"],  # [] = todos los metodos
         "publisherType": None,            # <- "Comerciante verificado" DESACTIVADO
         "proMerchantAds": False,
         "shieldMerchantAds": False,
@@ -121,7 +147,9 @@ def fetch_side(trade_type: str, rows: int = ROWS):
         except Exception as e:  # noqa: BLE001
             last_error = e
             time.sleep(3 * (intento + 1))
-    raise RuntimeError(f"No se pudo consultar Binance ({trade_type}): {last_error}")
+    raise RuntimeError(
+        f"No se pudo consultar Binance ({mercado['nombre']} / {trade_type}): {last_error}"
+    )
 
 
 def campo(dic, *nombres, default=""):
@@ -189,11 +217,18 @@ def resumen(anuncios):
     fila["cantidad_anuncios"] = len(pares)
 
     liquidez = 0.0
+    metodos = []
     for _, a in pares:
-        q = numero(campo(a.get("adv"), "surplusAmount", "tradableQuantity", default=None))
+        adv_a = a.get("adv") or {}
+        q = numero(campo(adv_a, "surplusAmount", "tradableQuantity", default=None))
         if q:
             liquidez += q
+        for m in (adv_a.get("tradeMethods") or []):
+            nombre = campo(m, "identifier", "tradeMethodName", "payType")
+            if nombre and nombre not in metodos:
+                metodos.append(nombre)
     fila["liquidez_total_usdt"] = round(liquidez, 2) if liquidez else ""
+    fila["metodos_pago_vistos"] = "|".join(sorted(metodos))
 
     if not pares:
         return fila
@@ -239,20 +274,29 @@ def asegurar_cabecera():
             cabecera = next(csv.reader(f), [])
         if cabecera == COLUMNAS:
             return
+        # Buscamos un nombre libre para no pisar un respaldo anterior
+        n = 1
         anterior = os.path.join(BASE, "data_anterior.csv")
+        while os.path.exists(anterior):
+            n += 1
+            anterior = os.path.join(BASE, f"data_anterior_{n}.csv")
         os.replace(DATA_FILE, anterior)
-        print("data.csv tenia el formato viejo -> guardado como data_anterior.csv")
+        print(f"data.csv tenia el formato viejo -> guardado como {os.path.basename(anterior)}")
 
     with open(DATA_FILE, "w", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(COLUMNAS)
 
 
-def guardar_snapshot(ahora_utc, lado, anuncios):
+def guardar_snapshot(ahora_utc, mercado, lado, anuncios):
     """Guarda la respuesta cruda completa, un archivo por dia."""
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
     ruta = os.path.join(SNAPSHOT_DIR, ahora_utc.strftime("%Y-%m-%d") + ".jsonl")
     registro = {
         "fecha_utc": ahora_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        "mercado": mercado["nombre"],
+        "fiat": mercado["fiat"],
+        "asset": mercado["asset"],
+        "payTypes": mercado["payTypes"],
         "lado": lado,
         "anuncios": anuncios,
     }
@@ -267,32 +311,56 @@ def main():
     asegurar_cabecera()
 
     filas = []
-    # "BUY" en la API = anuncios donde vos COMPRAS USDT
-    # "SELL" en la API = anuncios donde vos VENDES USDT
-    for trade_type, etiqueta in (("BUY", "compra"), ("SELL", "venta")):
-        anuncios = fetch_side(trade_type)
-        guardar_snapshot(ahora_utc, etiqueta, anuncios)
+    fallos = []
 
-        fila = resumen(anuncios)
-        fila["fecha_utc"] = ahora_utc.strftime("%Y-%m-%d %H:%M:%S")
-        fila["fecha_bolivia"] = ahora_bo.strftime("%Y-%m-%d %H:%M:%S")
-        fila["lado"] = etiqueta
-        filas.append([fila[c] for c in COLUMNAS])
+    for mercado in MERCADOS:
+        print(f"\n=== {mercado['nombre']} ({mercado['asset']}/{mercado['fiat']}) ===")
 
-        aviso = ""
-        if fila["descartados"]:
-            aviso = f"  (descartados {fila['descartados']}: {fila['precios_descartados']})"
-        print(
-            f"[{etiqueta}] bruto={fila['mejor_precio_bruto']} "
-            f"limpio={fila['mejor_precio_limpio']} "
-            f"mediana={fila['mediana_top10']} "
-            f"anuncios={fila['cantidad_anuncios']}{aviso}"
-        )
+        # "BUY" en la API = anuncios donde vos COMPRAS la cripto
+        # "SELL" en la API = anuncios donde vos VENDES la cripto
+        for trade_type, etiqueta in (("BUY", "compra"), ("SELL", "venta")):
+            try:
+                anuncios = fetch_side(mercado, trade_type)
+            except Exception as e:  # noqa: BLE001
+                # Un mercado caido no debe tumbar a los demas
+                print(f"[{etiqueta}] FALLO: {e}", file=sys.stderr)
+                fallos.append(f"{mercado['nombre']}/{etiqueta}")
+                continue
 
-    with open(DATA_FILE, "a", newline="", encoding="utf-8") as f:
-        csv.writer(f).writerows(filas)
+            guardar_snapshot(ahora_utc, mercado, etiqueta, anuncios)
 
-    print(f"Lectura guardada: {ahora_bo.strftime('%Y-%m-%d %H:%M')} (hora Bolivia)")
+            fila = resumen(anuncios)
+            fila["fecha_utc"] = ahora_utc.strftime("%Y-%m-%d %H:%M:%S")
+            fila["fecha_bolivia"] = ahora_bo.strftime("%Y-%m-%d %H:%M:%S")
+            fila["mercado"] = mercado["nombre"]
+            fila["fiat"] = mercado["fiat"]
+            fila["lado"] = etiqueta
+            filas.append([fila[c] for c in COLUMNAS])
+
+            aviso = ""
+            if fila["descartados"]:
+                aviso = f"  (descartados {fila['descartados']}: {fila['precios_descartados']})"
+            print(
+                f"[{etiqueta}] bruto={fila['mejor_precio_bruto']} "
+                f"limpio={fila['mejor_precio_limpio']} "
+                f"mediana={fila['mediana_top10']} "
+                f"anuncios={fila['cantidad_anuncios']}{aviso}"
+            )
+            if fila["metodos_pago_vistos"]:
+                print(f"          metodos: {fila['metodos_pago_vistos']}")
+
+    if filas:
+        with open(DATA_FILE, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(filas)
+
+    print(f"\nLectura guardada: {ahora_bo.strftime('%Y-%m-%d %H:%M')} (hora Bolivia)")
+    print(f"Filas nuevas: {len(filas)}")
+
+    if fallos:
+        # Fallan algunos pero no todos -> avisamos sin romper la ejecucion
+        print(f"ATENCION, mercados sin datos: {', '.join(fallos)}", file=sys.stderr)
+    if not filas:
+        raise RuntimeError("Ningun mercado devolvio datos")
 
 
 if __name__ == "__main__":

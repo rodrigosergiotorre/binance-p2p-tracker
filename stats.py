@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Genera estadisticas a partir de data.csv:
+Genera estadisticas a partir de data.csv, separadas por mercado:
   - Resumen por lado (compra / venta): minimo, maximo, promedio, ultimo precio
   - Subidas y bajadas: variacion respecto a la lectura anterior
   - Spread compra/venta
   - Cuanto trabajo esta haciendo el filtro de outliers
-  - Un grafico PNG con la evolucion de precios (limpio vs bruto)
+  - Un grafico PNG por mercado (precio limpio vs bruto)
 
 Uso:
     python stats.py
@@ -15,6 +15,7 @@ Requiere: pandas, matplotlib
 """
 
 import os
+import re
 import sys
 
 import pandas as pd
@@ -24,7 +25,6 @@ import matplotlib.pyplot as plt
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE, "data.csv")
-GRAFICO = os.path.join(BASE, "evolucion_precios.png")
 
 # Columna principal (con filtro de outliers) y su respaldo sin filtrar
 COL = "mejor_precio_limpio"
@@ -38,11 +38,13 @@ def cargar():
 
     df = pd.read_csv(DATA_FILE)
 
-    # Compatibilidad con la version vieja del archivo (columna "mejor_precio")
+    # Compatibilidad con versiones viejas del archivo
     if COL not in df.columns and "mejor_precio" in df.columns:
         df[COL] = df["mejor_precio"]
         df[COL_BRUTO] = df["mejor_precio"]
         df["descartados"] = 0
+    if "mercado" not in df.columns:
+        df["mercado"] = "USD-Zinli"
 
     for c in (COL, COL_BRUTO):
         if c in df.columns:
@@ -55,25 +57,25 @@ def cargar():
 def resumen_lado(df, lado):
     d = df[df["lado"] == lado].dropna(subset=[COL])
     if d.empty:
-        print(f"\n[{lado.upper()}] sin datos todavia.")
+        print(f"  [{lado.upper()}] sin datos todavia.")
         return
 
     precios = d[COL]
     ultimo = precios.iloc[-1]
     anterior = precios.iloc[-2] if len(precios) > 1 else None
 
-    print(f"\n===== {lado.upper()} (USDT/USD, Zinli) =====")
-    print(f"  Lecturas:        {len(d)}")
-    print(f"  Precio minimo:   {precios.min():.4f}")
-    print(f"  Precio maximo:   {precios.max():.4f}")
-    print(f"  Precio promedio: {precios.mean():.4f}")
-    print(f"  Ultimo precio:   {ultimo:.4f}  ({d['fecha_bolivia'].iloc[-1]})")
+    print(f"  --- {lado.upper()} ---")
+    print(f"    Lecturas:        {len(d)}")
+    print(f"    Precio minimo:   {precios.min():.4f}")
+    print(f"    Precio maximo:   {precios.max():.4f}")
+    print(f"    Precio promedio: {precios.mean():.4f}")
+    print(f"    Ultimo precio:   {ultimo:.4f}  ({d['fecha_bolivia'].iloc[-1]})")
 
     if anterior is not None:
         cambio = ultimo - anterior
         pct = (cambio / anterior) * 100 if anterior else 0
         flecha = "SUBIO" if cambio > 0 else ("BAJO" if cambio < 0 else "igual")
-        print(f"  vs. lectura previa: {flecha} {cambio:+.4f} ({pct:+.2f}%)")
+        print(f"    vs. lectura previa: {flecha} {cambio:+.4f} ({pct:+.2f}%)")
 
 
 def efecto_filtro(df):
@@ -85,19 +87,16 @@ def efecto_filtro(df):
     if d.empty:
         return
 
-    con_descarte = (pd.to_numeric(d["descartados"], errors="coerce").fillna(0) > 0)
+    con_descarte = pd.to_numeric(d["descartados"], errors="coerce").fillna(0) > 0
     n = int(con_descarte.sum())
 
-    print("\n===== FILTRO DE OUTLIERS =====")
-    print(f"  Lecturas con algun anuncio descartado: {n} de {len(d)} "
-          f"({n / len(d) * 100:.1f}%)")
-
+    print(f"  --- FILTRO DE OUTLIERS ---")
+    print(f"    Lecturas con algun descarte: {n} de {len(d)} ({n / len(d) * 100:.1f}%)")
     if n:
         dif = (d.loc[con_descarte, COL] - d.loc[con_descarte, COL_BRUTO]).abs()
-        print(f"  Cuando actua, corrige en promedio: {dif.mean():.4f}")
-        print(f"  Correccion mas grande:             {dif.max():.4f}")
+        print(f"    Correccion promedio: {dif.mean():.4f}   maxima: {dif.max():.4f}")
     else:
-        print("  Nunca hizo falta: ningun precio se alejo mas de 1% de la mediana.")
+        print("    Nunca hizo falta.")
 
 
 def spread(df):
@@ -107,44 +106,76 @@ def spread(df):
         return
     c = compra[COL].iloc[-1]
     v = venta[COL].iloc[-1]
-    print("\n===== SPREAD (ultima lectura) =====")
-    print(f"  Compra: {c:.4f}   Venta: {v:.4f}   Diferencia: {abs(v - c):.4f}")
+    print(f"  --- SPREAD (ultima lectura) ---")
+    print(f"    Compra: {c:.4f}   Venta: {v:.4f}   Diferencia: {abs(v - c):.4f}")
 
 
-def grafico(df):
+def metodos(df):
+    """Que metodos de pago aparecieron en la ultima lectura."""
+    if "metodos_pago_vistos" not in df.columns:
+        return
+    vistos = df["metodos_pago_vistos"].dropna()
+    vistos = vistos[vistos.astype(str).str.strip() != ""]
+    if vistos.empty:
+        return
+    ultimos = sorted(set(str(vistos.iloc[-1]).split("|")))
+    print(f"  --- METODOS DE PAGO (ultima lectura) ---")
+    print(f"    {', '.join(ultimos)}")
+
+
+def nombre_archivo(mercado):
+    limpio = re.sub(r"[^A-Za-z0-9_-]+", "_", str(mercado))
+    return os.path.join(BASE, f"evolucion_{limpio}.png")
+
+
+def grafico(df, mercado):
     plt.figure(figsize=(11, 5))
+    hay_datos = False
+
     for lado, color in (("compra", "#2e7d32"), ("venta", "#c62828")):
         d = df[df["lado"] == lado].dropna(subset=[COL])
         if d.empty:
             continue
+        hay_datos = True
         plt.plot(d["fecha_bolivia"], d[COL],
-                 marker="o", markersize=3, label=f"{lado.capitalize()} (filtrado)",
-                 color=color)
-        # El bruto se dibuja tenue por detras: donde se separa de la linea
-        # solida, ahi actuo el filtro de outliers.
+                 marker="o", markersize=3, color=color,
+                 label=f"{lado.capitalize()} (filtrado)")
+        # El bruto va tenue por detras: donde se separa de la linea solida,
+        # ahi actuo el filtro de outliers.
         if COL_BRUTO in d.columns:
             plt.plot(d["fecha_bolivia"], d[COL_BRUTO],
-                     linewidth=1, alpha=0.35, linestyle="--",
-                     label=f"{lado.capitalize()} (sin filtrar)", color=color)
+                     linewidth=1, alpha=0.35, linestyle="--", color=color,
+                     label=f"{lado.capitalize()} (sin filtrar)")
 
-    plt.title("USDT/USD por Zinli en Binance P2P - evolucion del mejor precio")
+    if not hay_datos:
+        plt.close()
+        return
+
+    plt.title(f"Binance P2P - {mercado} - evolucion del mejor precio")
     plt.xlabel("Fecha (hora Bolivia)")
     plt.ylabel("Precio")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(GRAFICO, dpi=120)
-    print(f"\nGrafico guardado en: {GRAFICO}")
+    ruta = nombre_archivo(mercado)
+    plt.savefig(ruta, dpi=120)
+    plt.close()
+    print(f"    Grafico: {os.path.basename(ruta)}")
 
 
 def main():
     df = cargar()
     print(f"Total de lecturas en la base: {len(df)}")
-    resumen_lado(df, "compra")
-    resumen_lado(df, "venta")
-    spread(df)
-    efecto_filtro(df)
-    grafico(df)
+
+    for mercado in df["mercado"].dropna().unique():
+        d = df[df["mercado"] == mercado]
+        print(f"\n========== {mercado} ==========")
+        resumen_lado(d, "compra")
+        resumen_lado(d, "venta")
+        spread(d)
+        efecto_filtro(d)
+        metodos(d)
+        grafico(d, mercado)
 
 
 if __name__ == "__main__":
