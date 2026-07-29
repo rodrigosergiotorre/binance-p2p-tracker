@@ -37,6 +37,21 @@ jobs:
       - name: Actualizar historico diario (Yadio)
         run: python historico.py || true
 
+      # El tablero se rearma UNA VEZ AL DIA (a las 05:00 UTC = 01:00 Bolivia).
+      # Si se regenerara cada hora, el repositorio crecería 24 veces mas rapido
+      # sin que el grafico cambie casi nada. Con "Run workflow" a mano tambien
+      # se regenera, para poder verlo cuando uno quiera.
+      - name: Rearmar el tablero
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          HORA=$(date -u +%H)
+          if [ "$HORA" = "05" ] || [ "$MANUAL" = "true" ]; then
+            python tablero.py || true
+          else
+            echo "No toca rearmar el tablero (hora UTC: $HORA, toca a las 05)"
+          fi
+
       - name: Guardar la lectura en el repositorio
         run: |
           git config user.name "github-actions[bot]"
