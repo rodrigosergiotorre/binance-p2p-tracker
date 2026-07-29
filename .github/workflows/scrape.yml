@@ -33,7 +33,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data.csv
-          git diff --staged --quiet || git commit -m "lectura: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git add -A
+          git diff --staged --quiet && echo "Sin cambios que guardar" && exit 0
+          git commit -m "lectura: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          # Por si tocaste algo en la web mientras corria: reintegramos y subimos
+          git pull --rebase
           git push
 
