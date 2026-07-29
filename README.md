@@ -22,7 +22,51 @@ Los dos filtros que pediri **estan desactivados** en el codigo (ver `scrape.py`)
 - `.github/workflows/scrape.yml` -> la tarea programada cada 3 horas.
 - `stats.py` -> las estadisticas y el grafico (lo corres cuando quieras).
 - `requirements.txt` -> dependencias.
-- `data.csv` -> se crea solo con la primera lectura.
+- `data.csv` -> el resumen, una fila por lado por lectura.
+- `snapshots/AAAA-MM-DD.jsonl` -> la respuesta CRUDA y completa de Binance,
+  un archivo por dia. Nada se descarta: si manana queremos una estadistica
+  distinta, se puede recalcular hacia atras sobre estos archivos.
+
+---
+
+## El filtro de outliers
+
+A veces el primer anuncio de la lista esta muy alejado del resto: alguien
+urgido, un monto minusculo, un error de dedo. Ese precio no representa al
+mercado y ensucia el promedio.
+
+Como lo resolvemos: se calcula la **mediana de los primeros 10 anuncios** (la
+mediana casi no se mueve por uno o dos precios locos) y se recorre la lista
+desde el mejor precio hacia abajo, salteando los que se alejen **mas de 1%**
+de esa mediana. El primero que entra dentro del 1% es el precio bueno.
+
+Ejemplo: si los precios son 1.000 / 1.014 / 1.014 / 1.014 / 1.015, la mediana
+es 1.014 y el 1.000 se descarta por estar 1.4% abajo.
+
+**No se pierde nada:** se guardan las dos versiones, `mejor_precio_bruto` (sin
+filtrar) y `mejor_precio_limpio`, mas cuales precios se descartaron. En el
+grafico de `stats.py` la linea punteada es el bruto; donde se separa de la
+solida, ahi actuo el filtro.
+
+Para cambiar que tan estricto es, edita `UMBRAL_OUTLIER` en `scrape.py`
+(0.01 = 1%).
+
+### Columnas de data.csv
+
+| Columna | Que es |
+|---|---|
+| `fecha_utc` / `fecha_bolivia` | Momento de la lectura |
+| `lado` | `compra` o `venta` |
+| `mejor_precio_bruto` | El primero de la lista, sin filtrar |
+| `mejor_precio_limpio` | El primero que pasa el filtro de outliers |
+| `promedio_top5_limpio` | Promedio de los 5 mejores ya filtrados |
+| `mediana_top10` | La referencia que usa el filtro |
+| `descartados` / `precios_descartados` | Cuantos se saltaron y cuales |
+| `cantidad_anuncios` | Anuncios devueltos en esa lectura |
+| `liquidez_total_usdt` | Suma de lo disponible en todos los anuncios |
+| `mejor_min_orden` / `mejor_max_orden` | Limites de orden del mejor anuncio (util: un precio buenisimo que solo acepta $20 no sirve de mucho) |
+| `mejor_comerciante` / `mejor_tipo` | Quien publica el mejor precio |
+| `mejor_ordenes_mes` / `mejor_tasa_completado` | Reputacion de ese anunciante |
 
 ---
 

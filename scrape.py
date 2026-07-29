@@ -6,17 +6,34 @@ Mercado: USDT (cripto) / USD (fiat)
 Metodo de pago: Zinli
 Lados: COMPRA (BUY) y VENTA (SELL)
 
-Filtros DESACTIVADOS a proposito (para que coincida con lo que pediste):
-  - "Comerciante verificado"   -> publisherType = None
+Filtros DESACTIVADOS a proposito:
+  - "Comerciante verificado"     -> publisherType = None
   - "Solo anuncios comerciables" -> filterType = "all"
 
-Cada ejecucion agrega una fila por lado (compra y venta) al archivo data.csv,
-con la fecha/hora, el mejor precio, el promedio de los primeros anuncios y
-cuantos anuncios habia. Con eso despues se arman las subidas y bajadas.
+Cada ejecucion:
+  1. Agrega una fila por lado (compra y venta) a data.csv con el resumen.
+  2. Guarda la respuesta COMPLETA de Binance en snapshots/AAAA-MM-DD.jsonl
+     (una linea JSON por lado, por lectura). Nada se pierde: si algun dia
+     queremos calcular otra estadistica, se puede recalcular hacia atras.
+
+Sobre el filtro de outliers
+---------------------------
+A veces el primer anuncio de la lista esta muy alejado del resto (alguien
+urgido, un monto ridiculamente chico, etc.) y ensucia el "mejor precio".
+
+Lo que hacemos: calculamos la MEDIANA de los primeros 10 anuncios (la mediana
+casi no se mueve por uno o dos precios locos) y vamos recorriendo la lista
+desde el mejor precio hacia abajo, descartando los que se alejen mas de 1% de
+esa mediana. El primero que entra dentro del 1% es el "mejor precio limpio".
+
+Se guardan LAS DOS cosas: mejor_precio_bruto (sin filtrar, como antes) y
+mejor_precio_limpio. Asi podes comparar y decidir si el filtro te sirve.
 """
 
 import csv
+import json
 import os
+import statistics
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -28,10 +45,19 @@ API_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
 # Bolivia = UTC-4 (para guardar tambien la hora local, mas facil de leer)
 BOLIVIA_TZ = timezone(timedelta(hours=-4))
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.csv")
+BASE = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(BASE, "data.csv")
+SNAPSHOT_DIR = os.path.join(BASE, "snapshots")
+
+# Cuantos anuncios pedimos por lado
+ROWS = 20
 
 # Cuantos anuncios (los mejores) tomar para calcular el promedio
 TOP_N = 5
+
+# Filtro de outliers
+VENTANA_MEDIANA = 10    # sobre cuantos anuncios se calcula la mediana
+UMBRAL_OUTLIER = 0.01   # 1% de desvio respecto a la mediana
 
 HEADERS = {
     "Content-Type": "application/json",
@@ -45,8 +71,28 @@ HEADERS = {
     "Referer": "https://p2p.binance.com/",
 }
 
+COLUMNAS = [
+    "fecha_utc",
+    "fecha_bolivia",
+    "lado",                  # "compra" o "venta"
+    "mejor_precio_bruto",    # el primero de la lista, sin filtrar
+    "mejor_precio_limpio",   # el primero que pasa el filtro de outliers
+    "promedio_top5_limpio",  # promedio de los 5 mejores ya filtrados
+    "mediana_top10",         # referencia usada por el filtro
+    "descartados",           # cuantos anuncios se saltaron por outliers
+    "precios_descartados",   # cuales, separados por "|"
+    "cantidad_anuncios",
+    "liquidez_total_usdt",   # suma de lo disponible en todos los anuncios
+    "mejor_min_orden",       # limite minimo de la orden del mejor anuncio
+    "mejor_max_orden",       # limite maximo de la orden del mejor anuncio
+    "mejor_comerciante",     # apodo del anunciante del mejor precio
+    "mejor_tipo",            # user / merchant
+    "mejor_ordenes_mes",
+    "mejor_tasa_completado",
+]
 
-def fetch_side(trade_type: str, rows: int = 20):
+
+def fetch_side(trade_type: str, rows: int = ROWS):
     """Pide a Binance los anuncios de un lado (BUY o SELL)."""
     payload = {
         "fiat": "USD",
@@ -71,45 +117,147 @@ def fetch_side(trade_type: str, rows: int = 20):
         try:
             resp = requests.post(API_URL, json=payload, headers=HEADERS, timeout=30)
             resp.raise_for_status()
-            data = resp.json().get("data", [])
-            return data
+            return resp.json().get("data", []) or []
         except Exception as e:  # noqa: BLE001
             last_error = e
             time.sleep(3 * (intento + 1))
     raise RuntimeError(f"No se pudo consultar Binance ({trade_type}): {last_error}")
 
 
-def resumen_precios(anuncios):
-    """Calcula mejor precio, promedio de los primeros y cantidad de anuncios."""
-    precios = []
+def campo(dic, *nombres, default=""):
+    """Devuelve el primer campo que exista. Binance a veces cambia nombres."""
+    if not isinstance(dic, dict):
+        return default
+    for n in nombres:
+        v = dic.get(n)
+        if v not in (None, ""):
+            return v
+    return default
+
+
+def numero(valor):
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def precios_de(anuncios):
+    """Lista de (precio, anuncio) en el orden que los devuelve Binance."""
+    salida = []
     for a in anuncios:
-        try:
-            precios.append(float(a["adv"]["price"]))
-        except (KeyError, TypeError, ValueError):
+        if not isinstance(a, dict):
             continue
+        p = numero(campo(a.get("adv"), "price", default=None))
+        if p is not None and p > 0:
+            salida.append((p, a))
+    return salida
 
-    if not precios:
-        return None, None, 0
 
-    mejor = precios[0]  # Binance ya los devuelve ordenados por mejor precio
-    top = precios[:TOP_N]
-    promedio = round(sum(top) / len(top), 4)
-    return mejor, promedio, len(precios)
+def filtrar_outliers(pares):
+    """
+    Descarta los anuncios del tope de la lista que se alejen mas de
+    UMBRAL_OUTLIER de la mediana de los primeros VENTANA_MEDIANA.
+
+    Devuelve: (pares_limpios, precios_descartados, mediana)
+    """
+    if len(pares) < 3:
+        return pares, [], None
+
+    muestra = [p for p, _ in pares[:VENTANA_MEDIANA]]
+    mediana = statistics.median(muestra)
+    if not mediana:
+        return pares, [], None
+
+    descartados = []
+    for i, (precio, _) in enumerate(pares):
+        if abs(precio - mediana) / mediana > UMBRAL_OUTLIER:
+            descartados.append(precio)
+            continue
+        # Primer anuncio que entra dentro del umbral: de aqui en adelante
+        # nos quedamos con la lista tal cual.
+        return pares[i:], descartados, mediana
+
+    # Caso raro: ninguno paso el filtro. No inventamos nada, devolvemos todo.
+    return pares, [], mediana
+
+
+def resumen(anuncios):
+    """Calcula todas las metricas de un lado."""
+    pares = precios_de(anuncios)
+    fila = {c: "" for c in COLUMNAS}
+    fila["cantidad_anuncios"] = len(pares)
+
+    liquidez = 0.0
+    for _, a in pares:
+        q = numero(campo(a.get("adv"), "surplusAmount", "tradableQuantity", default=None))
+        if q:
+            liquidez += q
+    fila["liquidez_total_usdt"] = round(liquidez, 2) if liquidez else ""
+
+    if not pares:
+        return fila
+
+    fila["mejor_precio_bruto"] = pares[0][0]
+
+    limpios, descartados, mediana = filtrar_outliers(pares)
+    fila["mediana_top10"] = round(mediana, 4) if mediana else ""
+    fila["descartados"] = len(descartados)
+    fila["precios_descartados"] = "|".join(str(p) for p in descartados)
+
+    if not limpios:
+        return fila
+
+    mejor_precio, mejor_anuncio = limpios[0]
+    fila["mejor_precio_limpio"] = mejor_precio
+
+    top = [p for p, _ in limpios[:TOP_N]]
+    fila["promedio_top5_limpio"] = round(sum(top) / len(top), 4)
+
+    adv = mejor_anuncio.get("adv") or {}
+    anunciante = mejor_anuncio.get("advertiser") or {}
+    fila["mejor_min_orden"] = campo(adv, "minSingleTransAmount")
+    fila["mejor_max_orden"] = campo(adv, "maxSingleTransAmount", "dynamicMaxSingleTransAmount")
+    fila["mejor_comerciante"] = campo(anunciante, "nickName", "nickname")
+    fila["mejor_tipo"] = campo(anunciante, "userType")
+    fila["mejor_ordenes_mes"] = campo(anunciante, "monthOrderCount")
+    fila["mejor_tasa_completado"] = campo(anunciante, "monthFinishRate")
+
+    return fila
 
 
 def asegurar_cabecera():
-    """Crea data.csv con su cabecera si no existe todavia."""
-    if not os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([
-                "fecha_utc",
-                "fecha_bolivia",
-                "lado",            # "compra" o "venta"
-                "mejor_precio",
-                "promedio_top5",
-                "cantidad_anuncios",
-            ])
+    """
+    Crea data.csv con su cabecera si no existe.
+
+    Si ya existe pero con las columnas viejas (version anterior del script),
+    lo renombra a data_anterior.csv y arranca uno nuevo. Asi no se mezclan
+    filas con distinta cantidad de columnas, y no se pierde lo ya recolectado.
+    """
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, newline="", encoding="utf-8") as f:
+            cabecera = next(csv.reader(f), [])
+        if cabecera == COLUMNAS:
+            return
+        anterior = os.path.join(BASE, "data_anterior.csv")
+        os.replace(DATA_FILE, anterior)
+        print("data.csv tenia el formato viejo -> guardado como data_anterior.csv")
+
+    with open(DATA_FILE, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(COLUMNAS)
+
+
+def guardar_snapshot(ahora_utc, lado, anuncios):
+    """Guarda la respuesta cruda completa, un archivo por dia."""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    ruta = os.path.join(SNAPSHOT_DIR, ahora_utc.strftime("%Y-%m-%d") + ".jsonl")
+    registro = {
+        "fecha_utc": ahora_utc.strftime("%Y-%m-%d %H:%M:%S"),
+        "lado": lado,
+        "anuncios": anuncios,
+    }
+    with open(ruta, "a", encoding="utf-8") as f:
+        f.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
 
 def main():
@@ -123,21 +271,26 @@ def main():
     # "SELL" en la API = anuncios donde vos VENDES USDT
     for trade_type, etiqueta in (("BUY", "compra"), ("SELL", "venta")):
         anuncios = fetch_side(trade_type)
-        mejor, promedio, cantidad = resumen_precios(anuncios)
+        guardar_snapshot(ahora_utc, etiqueta, anuncios)
 
-        filas.append([
-            ahora_utc.strftime("%Y-%m-%d %H:%M:%S"),
-            ahora_bo.strftime("%Y-%m-%d %H:%M:%S"),
-            etiqueta,
-            mejor if mejor is not None else "",
-            promedio if promedio is not None else "",
-            cantidad,
-        ])
-        print(f"[{etiqueta}] mejor={mejor}  promedio_top{TOP_N}={promedio}  anuncios={cantidad}")
+        fila = resumen(anuncios)
+        fila["fecha_utc"] = ahora_utc.strftime("%Y-%m-%d %H:%M:%S")
+        fila["fecha_bolivia"] = ahora_bo.strftime("%Y-%m-%d %H:%M:%S")
+        fila["lado"] = etiqueta
+        filas.append([fila[c] for c in COLUMNAS])
+
+        aviso = ""
+        if fila["descartados"]:
+            aviso = f"  (descartados {fila['descartados']}: {fila['precios_descartados']})"
+        print(
+            f"[{etiqueta}] bruto={fila['mejor_precio_bruto']} "
+            f"limpio={fila['mejor_precio_limpio']} "
+            f"mediana={fila['mediana_top10']} "
+            f"anuncios={fila['cantidad_anuncios']}{aviso}"
+        )
 
     with open(DATA_FILE, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerows(filas)
+        csv.writer(f).writerows(filas)
 
     print(f"Lectura guardada: {ahora_bo.strftime('%Y-%m-%d %H:%M')} (hora Bolivia)")
 
@@ -148,4 +301,3 @@ if __name__ == "__main__":
     except Exception as e:  # noqa: BLE001
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
-
