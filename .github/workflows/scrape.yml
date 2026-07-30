@@ -3,11 +3,17 @@ name: Recolector P2P Binance
 # Corre CADA HORA, todo el dia, en los servidores de GitHub (gratis).
 # Tu Mac no tiene que estar prendida.
 #
+# Nota real sobre los horarios: GitHub NO garantiza que las tareas programadas
+# corran a la hora exacta. En repos gratuitos se retrasan y a veces se saltean
+# horas enteras, sobre todo en el minuto :00, que es el mas congestionado
+# porque lo elige todo el mundo. Por eso el minuto es :37 y por eso el tablero
+# ya no depende de una hora fija (ver mas abajo).
+#
 # Cuota: GitHub Free da 2.000 minutos/mes en repos privados y redondea cada
 # ejecucion a 1 minuto. 24 al dia = ~730 al mes. Entra comodo.
 on:
   schedule:
-    - cron: "0 * * * *"     # cada hora en punto (UTC)
+    - cron: "37 * * * *"      # cada hora, al minuto 37 (UTC)
   workflow_dispatch:          # boton para correrlo a mano cuando quieras probar
 
 # Permiso para que la accion pueda guardar el data.csv actualizado en el repo
@@ -37,19 +43,50 @@ jobs:
       - name: Actualizar historico diario (Yadio)
         run: python historico.py || true
 
-      # El tablero se rearma UNA VEZ AL DIA (a las 05:00 UTC = 01:00 Bolivia).
-      # Si se regenerara cada hora, el repositorio crecería 24 veces mas rapido
-      # sin que el grafico cambie casi nada. Con "Run workflow" a mano tambien
-      # se regenera, para poder verlo cuando uno quiera.
+      # El tablero se rearma por ANTIGUEDAD, no a una hora fija.
+      #
+      # Antes se rearmaba solo si la ejecucion caia dentro de la hora 05:00 UTC.
+      # El problema: si GitHub se salteaba esa hora -- que es lo que pasa -- el
+      # tablero no se rearmaba en todo el dia y quedaba congelado mostrando
+      # datos viejos, aunque data.csv siguiera creciendo bien.
+      #
+      # Ahora se pregunta "cuanto hace que se rearmo?". Si pasaron 20 horas o
+      # mas, se rearma en la PRIMERA ejecucion que ocurra, sea la hora que sea.
+      # El momento del ultimo rearmado se guarda en .tablero_ultimo (epoch UTC),
+      # que viaja en el repositorio; no se usa la fecha del archivo porque git
+      # no guarda fechas de modificacion y cada checkout las reinicia.
+      #
+      # Con "Run workflow" a mano se rearma siempre, para poder verlo al toque.
       - name: Rearmar el tablero
         env:
           MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          HORA=$(date -u +%H)
-          if [ "$HORA" = "05" ] || [ "$MANUAL" = "true" ]; then
-            python tablero.py || true
+          LIMITE=72000                      # 20 horas en segundos
+          AHORA=$(date -u +%s)
+          ULTIMO=0
+          [ -f .tablero_ultimo ] && ULTIMO=$(cat .tablero_ultimo 2>/dev/null || echo 0)
+          EDAD=$(( AHORA - ULTIMO ))
+
+          if [ "$MANUAL" = "true" ]; then
+            MOTIVO="ejecucion manual"
+          elif [ ! -f index.html ]; then
+            MOTIVO="no existe index.html"
+          elif [ "$EDAD" -ge "$LIMITE" ]; then
+            MOTIVO="el tablero tiene $((EDAD/3600))h de antiguedad"
           else
-            echo "No toca rearmar el tablero (hora UTC: $HORA, toca a las 05)"
+            echo "No toca rearmar: el tablero tiene $((EDAD/3600))h, menos de 20."
+            exit 0
+          fi
+
+          echo "Rearmo el tablero ($MOTIVO)."
+          # Solo se marca la fecha si tablero.py realmente termino bien. Si
+          # falla, .tablero_ultimo queda como estaba y se reintenta a la hora
+          # siguiente en vez de esperar 20 horas mas.
+          if python tablero.py; then
+            echo "$AHORA" > .tablero_ultimo
+            echo "Tablero rearmado y fecha registrada."
+          else
+            echo "AVISO: tablero.py fallo. No se registra la fecha; se reintenta luego."
           fi
 
       - name: Guardar la lectura en el repositorio
@@ -62,4 +99,3 @@ jobs:
           # Por si tocaste algo en la web mientras corria: reintegramos y subimos
           git pull --rebase
           git push
-
